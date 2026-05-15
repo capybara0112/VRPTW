@@ -3,28 +3,21 @@ package meaf;
 import java.io.*;
 import java.util.*;
 
-/**
- * Holds all VRPTW instance data parsed from a Solomon-format .txt file.
- * Also provides distance matrix, route evaluation, and feasibility checks.
- */
 public class VRPTWInstance {
 
-    // ── Raw data ─────────────────────────────────────────────────────────────
     public final String   name;
     public final int      numVehicles;
     public final int      vehicleCapacity;
-    public final Customer depot;             // customer[0]
-    public final Customer[] customers;       // customers[0] = depot, [1..N] = real
-    public final int      numCustomers;      // N (excludes depot)
-    public final double[][] dist;            // Euclidean distance matrix [0..N][0..N]
+    public final Customer depot;
+    public final Customer[] customers;
+    public final int      numCustomers;
+    public final double[][] dist;
 
-    // Penalty weights
     public static final double UNIT_COST  = 1.0;
     public static final double INIT_COST  = 0.0;
-    public static final double WAIT_COST  = 0.0;   // ← Nên sửa thành 0.0
+    public static final double WAIT_COST  = 0.0;
     public static final double DELAY_COST = 0.0;
 
-    // ── Constructor ──────────────────────────────────────────────────────────
     private VRPTWInstance(String name, int numVehicles, int vehicleCapacity,
                           Customer[] customers) {
         this.name            = name;
@@ -34,7 +27,6 @@ public class VRPTWInstance {
         this.depot           = customers[0];
         this.numCustomers    = customers.length - 1;
 
-        // Build Euclidean distance matrix
         int n = customers.length;
         dist = new double[n][n];
         for (int i = 0; i < n; i++) {
@@ -46,7 +38,6 @@ public class VRPTWInstance {
         }
     }
 
-    // ── Static factory: parse Solomon .txt ───────────────────────────────────
     public static VRPTWInstance load(String filePath) throws IOException {
         try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {
             String instanceName = br.readLine().trim();
@@ -68,13 +59,13 @@ public class VRPTWInstance {
                 if (line.isEmpty()) continue;
                 String[] tok = line.split("\\s+");
                 if (tok.length < 7) continue;
-                int id  = Integer.parseInt(tok[0]);
+                int id = Integer.parseInt(tok[0]);
                 double x = Double.parseDouble(tok[1]);
                 double y = Double.parseDouble(tok[2]);
-                int dem  = Integer.parseInt(tok[3]);
-                int rt   = Integer.parseInt(tok[4]);
-                int due  = Integer.parseInt(tok[5]);
-                int svc  = Integer.parseInt(tok[6]);
+                int dem = Integer.parseInt(tok[3]);
+                int rt  = Integer.parseInt(tok[4]);
+                int due = Integer.parseInt(tok[5]);
+                int svc = Integer.parseInt(tok[6]);
                 custs.add(new Customer(id, x, y, dem, rt, due, svc));
             }
             Customer[] arr = custs.toArray(new Customer[0]);
@@ -82,8 +73,14 @@ public class VRPTWInstance {
         }
     }
 
-    // ── Route decoding ───────────────────────────────────────────────────────
+    /**
+     * Sequential decode + merge single‑customer routes only.
+     * B1: duyệt tuần tự, nếu vượt tải hoặc đến trễ → tạo route mới.
+     * B2: với mỗi route chỉ có 1 khách hàng, thử chèn khách hàng đó
+     *     vào các route khác (theo first feasible). Nếu chèn được, xoá route 1‑customer.
+     */
     public List<List<Integer>> decode(int[] perm) {
+        // === B1: sequential decoding ===
         List<List<Integer>> routes = new ArrayList<>();
         List<Integer> cur = new ArrayList<>();
         int load = 0;
@@ -94,7 +91,8 @@ public class VRPTWInstance {
             int dem = customers[c].demand;
             double travelTime = dist[prev][c];
             double arrivalTime = currentTime + travelTime;
-        
+
+            // Nếu vượt tải hoặc đến trễ → tạo route mới
             if (load + dem > vehicleCapacity || arrivalTime > customers[c].dueTime) {
                 if (!cur.isEmpty()) {
                     routes.add(cur);
@@ -106,7 +104,7 @@ public class VRPTWInstance {
                 travelTime = dist[0][c];
                 arrivalTime = travelTime;
             }
-        
+
             double serviceStart = Math.max(arrivalTime, customers[c].readyTime);
             cur.add(c);
             load += dem;
@@ -114,6 +112,39 @@ public class VRPTWInstance {
             prev = c;
         }
         if (!cur.isEmpty()) routes.add(cur);
+
+        // === B2: merge single‑customer routes (size == 1) ===
+        for (int i = routes.size() - 1; i >= 0; i--) {
+            List<Integer> small = routes.get(i);
+            if (small.size() == 1) {
+                int c = small.get(0);
+                boolean inserted = false;
+                for (int j = 0; j < routes.size(); j++) {
+                    if (j == i) continue;
+                    List<Integer> target = routes.get(j);
+                    // Kiểm tra tải trọng
+                    int targetLoad = 0;
+                    for (int id : target) targetLoad += customers[id].demand;
+                    if (targetLoad + customers[c].demand > vehicleCapacity) continue;
+
+                    // Thử chèn vào từng vị trí, lấy vị trí đầu tiên feasible
+                    for (int pos = 0; pos <= target.size(); pos++) {
+                        List<Integer> candidate = new ArrayList<>(target);
+                        candidate.add(pos, c);
+                        if (isFeasible(candidate)) {
+                            target.add(pos, c);
+                            inserted = true;
+                            break;
+                        }
+                    }
+                    if (inserted) break;
+                }
+                if (inserted) {
+                    routes.remove(i);   // xoá tuyến 1‑customer vì đã chèn được
+                }
+            }
+        }
+
         return routes;
     }
 
@@ -138,17 +169,7 @@ public class VRPTWInstance {
 
     // ── Pure Euclidean distance ──────────────────────────────────────────────
     public double pureDistance(List<List<Integer>> routes) {
-        if (routes == null || routes.isEmpty()) return Double.MAX_VALUE;
-        double total = 0.0;
-        for (List<Integer> sub : routes) {
-            int prev = 0;
-            for (int c : sub) {
-                total += dist[prev][c];
-                prev = c;
-            }
-            total += dist[prev][0];
-        }
-        return total;
+        return evalRoutes(routes);
     }
 
     public double pureDistancePerm(int[] perm) {

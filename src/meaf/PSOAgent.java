@@ -2,32 +2,46 @@ package meaf;
 
 import java.util.*;
 
+/**
+ * Discrete Particle Swarm Optimization Agent cho bài toán VRPTW.
+ * Triển khai theo Wang (2003) swap‑operator formulation, đúng như mô tả
+ * trong Mục 3.5.2 của bài báo "A novel membrane‑inspired evolutionary
+ * algorithm framework for VRPTW".
+ *
+ * Tham số (Bảng 2): swarm = 100, w = 0.10.
+ * Công thức cập nhật (Eq. 18):
+ *   V_i(k+1) = w V_i(k) ⊕ r1 (pbest_i − X_i(k)) ⊕ r2 (gbest − X_i(k))
+ *   X_i(k+1) = X_i(k) + V_i(k+1)
+ */
 public class PSOAgent extends BaseAgent {
 
-    // Tham số đúng paper: swarm=100, w=0.10 (Bảng 2)
-    private static final int    SWARM_SIZE = 100;
-    private static final double W          = 0.10;   // inertia weight
-    // Giới hạn vận tốc (không có trong paper nhưng cần để ổn định – common practice)
-    private static final int    MAX_VELOCITY = 30;
+    // ── Tham số từ bài báo ─────────────────────────────────────────────────
+    private static final int    SWARM_SIZE = 100;   // kích thước bầy
+    private static final double W          = 0.10;   // trọng số quán tính (inertia weight)
 
-    private final int[][]  particles;      // vị trí các hạt (hoán vị)
-    private final double[] particleCost;
-    private final int[][]  pbest;          // personal best
-    private final double[] pbestCost;
-    private int[]   gbest;                 // global best
-    private double  gbestCost;
+    // ── Giới hạn vận tốc (theo thực nghiệm, không có trong bài báo) ──────────
+    private static final int    MAX_VELOCITY = 30;   // ngăn velocity phình vô hạn
 
-    private final int N;
-    private final Random rand;
-    private List<int[]>[] velocities;      // vận tốc = chuỗi swap operator
+    // ── Trạng thái của bầy ─────────────────────────────────────────────────
+    private final int[][]   particles;      // vị trí các hạt (hoán vị khách hàng)
+    private final double[]  particleCost;   // chi phí của từng hạt
+    private final int[][]   pbest;          // vị trí tốt nhất cá nhân (personal best)
+    private final double[]  pbestCost;      // chi phí của pbest
+    private int[]   gbest;                  // vị trí tốt nhất toàn cục (global best)
+    private double  gbestCost;              // chi phí của gbest
 
+    private final int       N;              // số khách hàng (không tính depot)
+    private final Random    rand;           // bộ sinh số ngẫu nhiên riêng
+    private List<int[]>[]   velocities;     // vận tốc của từng hạt (chuỗi swap)
+
+    // ── Constructor ─────────────────────────────────────────────────────────
     @SuppressWarnings("unchecked")
     public PSOAgent(VRPTWInstance inst, List<Individual> sharedPop, Random rand) {
         super(inst);
         this.rand = rand;
         this.N = inst.numCustomers;
 
-        // 1. Khởi tạo vị trí từ shared population (NN heuristic)
+        // 1. Khởi tạo vị trí ban đầu bằng Nearest‑Neighbor heuristic (trang 13)
         particles    = new int[SWARM_SIZE][N];
         particleCost = new double[SWARM_SIZE];
         pbest        = new int[SWARM_SIZE][N];
@@ -35,8 +49,8 @@ public class PSOAgent extends BaseAgent {
         for (int i = 0; i < SWARM_SIZE; i++) {
             Individual ind = sharedPop.get(i % sharedPop.size());
             particles[i]    = ind.route.clone();
-            particleCost[i] = inst.evalPerm(particles[i]);
-            pbest[i]        = particles[i].clone();
+            particleCost[i] = inst.evalPerm(particles[i]);   // đánh giá fitness
+            pbest[i]        = particles[i].clone();          // pbest ban đầu = chính nó
             pbestCost[i]    = particleCost[i];
         }
 
@@ -47,36 +61,37 @@ public class PSOAgent extends BaseAgent {
         }
         gbest     = pbest[bestIdx].clone();
         gbestCost = pbestCost[bestIdx];
-        bestInd   = new Individual(gbest, gbestCost);
+        bestInd   = new Individual(gbest, gbestCost);       // để BaseAgent theo dõi
 
-        // 3. Khởi tạo vận tốc ngẫu nhiên (vài swap ban đầu)
+        // 3. Khởi tạo vận tốc ban đầu (vài swap ngẫu nhiên)
         velocities = new ArrayList[SWARM_SIZE];
         for (int i = 0; i < SWARM_SIZE; i++) {
             velocities[i] = new ArrayList<>();
-            for (int k = 0; k < 5; k++) {   // 5 swap khởi tạo là đủ
+            for (int k = 0; k < 5; k++) {
                 velocities[i].add(new int[]{rand.nextInt(N), rand.nextInt(N)});
             }
         }
+
         recordHistory();
     }
 
+    // ── Vòng lặp chính (một thế hệ) ─────────────────────────────────────────
     @Override
     public void step() {
         if (!active) return;
         double prevBest = gbestCost;
 
         for (int i = 0; i < SWARM_SIZE; i++) {
+            // === 1. Inertia (quán tính) ===
             List<int[]> newVelocity = new ArrayList<>();
-
-            // --- 1. Inertia ---
             for (int[] swap : velocities[i]) {
                 if (rand.nextDouble() < W) {
                     newVelocity.add(swap);
                 }
             }
 
-            // --- 2. Cognitive ---
-            double r1 = rand.nextDouble();   // r1 ~ U(0,1)
+            // === 2. Cognitive (học từ pbest) ===
+            double r1 = rand.nextDouble();                       // r1 ~ U(0,1)
             List<int[]> diffToPbest = getSwapSequence(particles[i], pbest[i]);
             for (int[] swap : diffToPbest) {
                 if (rand.nextDouble() < r1) {
@@ -84,8 +99,8 @@ public class PSOAgent extends BaseAgent {
                 }
             }
 
-            // --- 3. Social ---
-            double r2 = rand.nextDouble();   // r2 ~ U(0,1)
+            // === 3. Social (học từ gbest) ===
+            double r2 = rand.nextDouble();                       // r2 ~ U(0,1)
             List<int[]> diffToGbest = getSwapSequence(particles[i], gbest);
             for (int[] swap : diffToGbest) {
                 if (rand.nextDouble() < r2) {
@@ -93,20 +108,19 @@ public class PSOAgent extends BaseAgent {
                 }
             }
 
-            // --- 4. Giới hạn vận tốc (bounded velocity) ---
+            // === 4. Giới hạn vận tốc (clamp) để tránh nhiễu loạn ===
             if (newVelocity.size() > MAX_VELOCITY) {
                 Collections.shuffle(newVelocity, rand);
                 newVelocity = new ArrayList<>(newVelocity.subList(0, MAX_VELOCITY));
             }
-
-            // Reset nếu velocity quá lớn (tránh explosion)
+            // Reset nếu velocity tích lũy quá lớn qua các thế hệ
             if (velocities[i].size() > MAX_VELOCITY * 2) {
                 velocities[i].clear();
             }
 
             velocities[i] = newVelocity;
 
-            // --- 5. Áp dụng vận tốc để tạo vị trí mới ---
+            // === 5. Áp dụng vận tốc → vị trí mới (X + V) ===
             int[] newPos = particles[i].clone();
             for (int[] swap : velocities[i]) {
                 int tmp = newPos[swap[0]];
@@ -116,7 +130,7 @@ public class PSOAgent extends BaseAgent {
             particles[i]    = newPos;
             particleCost[i] = inst.evalPerm(newPos);
 
-            // --- 6. Cập nhật pbest & gbest ---
+            // === 6. Cập nhật pbest và gbest ===
             if (particleCost[i] < pbestCost[i]) {
                 pbest[i]     = particles[i].clone();
                 pbestCost[i] = particleCost[i];
@@ -127,7 +141,7 @@ public class PSOAgent extends BaseAgent {
             }
         }
 
-        // --- 7. Cập nhật trạng thái hội tụ ---
+        // === 7. Cập nhật trạng thái hội tụ (dùng cho MEAF) ===
         if (gbestCost < prevBest - 1e-9) {
             stableCount = 0;
             bestInd = new Individual(gbest, gbestCost);
@@ -137,7 +151,7 @@ public class PSOAgent extends BaseAgent {
         recordHistory();
     }
 
-    // ==================== Fusion (Eq. 21) ====================
+    // ── Fusion (Eq. 21) – chỉ dùng khi PSO nằm trong MEAF ──────────────────
     @Override
     public void injectGlobalBest(List<Individual> pool) {
         if (!active || pool == null || pool.isEmpty()) return;
@@ -146,27 +160,29 @@ public class PSOAgent extends BaseAgent {
             int[] extRoute = extInd.route.clone();
             double extCost = inst.evalPerm(extRoute);
 
+            // Cập nhật gbest nếu giải pháp ngoại lai tốt hơn
             if (extCost < gbestCost) {
-                gbest = extRoute.clone();
+                gbest     = extRoute.clone();
                 gbestCost = extCost;
-                bestInd = new Individual(gbest, gbestCost);
+                bestInd   = new Individual(gbest, gbestCost);
             }
 
-            // Chỉ inject vào khoảng 25% swarm (giữ diversity)
+            // Chỉ ảnh hưởng đến khoảng 25% bầy (giữ diversity)
             int affected = Math.max(1, SWARM_SIZE / 4);
             for (int z = 0; z < affected; z++) {
-                int i = rand.nextInt(SWARM_SIZE);
-                List<int[]> seqToExternal = getSwapSequence(particles[i], extRoute);
-                double r_ext = rand.nextDouble();
+                int idx = rand.nextInt(SWARM_SIZE);
+                List<int[]> seqToExternal = getSwapSequence(particles[idx], extRoute);
+                double rExt = rand.nextDouble();
                 for (int[] swap : seqToExternal) {
-                    if (rand.nextDouble() < r_ext) {
-                        velocities[i].add(swap);
+                    if (rand.nextDouble() < rExt) {
+                        velocities[idx].add(swap);
                     }
                 }
             }
         }
     }
 
+    // ── Dissolve Rule (khi bị MEAF loại bỏ) ─────────────────────────────────
     @Override
     public void dissolveFrom(BaseAgent donor) {
         if (!active) return;
@@ -179,40 +195,41 @@ public class PSOAgent extends BaseAgent {
         for (int i = 0; i < nCopy; i++) {
             int wi = idx[i];
             int[] ext = donorRoute.clone();
+            // Thêm nhiễu nhẹ
             if (rand.nextDouble() < 0.3) {
                 int a = rand.nextInt(N), b = rand.nextInt(N);
                 int tmp = ext[a]; ext[a] = ext[b]; ext[b] = tmp;
             }
             double extCost = inst.evalPerm(ext);
-            particles[wi] = ext;
-            pbestCost[wi]  = extCost;
-            pbest[wi]      = ext.clone();
+            particles[wi]   = ext;
+            pbestCost[wi]   = extCost;
+            pbest[wi]       = ext.clone();
             if (extCost < gbestCost) {
-                gbest = ext.clone();
+                gbest     = ext.clone();
                 gbestCost = extCost;
-                bestInd = new Individual(gbest, gbestCost);
+                bestInd   = new Individual(gbest, gbestCost);
             }
         }
-        System.out.printf("    [PSO] Dissolved: re-seeded %d particles from %s%n",
+        System.out.printf("    [PSO] Dissolved: re‑seeded %d particles from %s%n",
                 nCopy, donor.getClass().getSimpleName());
     }
 
-    // ==================== Helper ====================
-    // Tạo swap sequence tối thiểu bằng cách dùng map vị trí (O(N))
+    // ── Helper: tạo chuỗi swap tối thiểu để biến current → target (O(N)) ───
     private List<int[]> getSwapSequence(int[] current, int[] target) {
         List<int[]> sequence = new ArrayList<>();
         int[] temp = current.clone();
-        Map<Integer, Integer> posMap = new HashMap<>();
+        // Dùng map vị trí để đạt O(N)
+        Map<Integer, Integer> pos = new HashMap<>();
         for (int k = 0; k < temp.length; k++) {
-            posMap.put(temp[k], k);
+            pos.put(temp[k], k);
         }
         for (int i = 0; i < temp.length; i++) {
             if (temp[i] != target[i]) {
-                int j = posMap.get(target[i]);
+                int j = pos.get(target[i]);
                 sequence.add(new int[]{i, j});
                 // cập nhật map
-                posMap.put(temp[i], j);
-                posMap.put(temp[j], i);
+                pos.put(temp[i], j);
+                pos.put(temp[j], i);
                 // swap
                 int tmp = temp[i];
                 temp[i] = temp[j];
@@ -222,6 +239,7 @@ public class PSOAgent extends BaseAgent {
         return sequence;
     }
 
+    // ── Ghi lại lịch sử hội tụ (pure distance) ─────────────────────────────
     private void recordHistory() {
         history.add(inst.pureDistancePerm(bestInd.route));
     }
